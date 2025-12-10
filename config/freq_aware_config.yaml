@@ -1,0 +1,47 @@
+# Frequency-Aware MedCLIP-SAMv2 Configuration
+
+# ========== Wavelet Transform Settings ==========
+wavelet_type: 'haar'  # Options: 'haar', 'db2', 'bior1.5', 'bior2.4', 'coif1', 'dmey'
+image_size: 224
+
+# ========== Feature Fusion Settings ==========
+embedding_dim: 768  # BiomedCLIP ViT-B dimension
+num_patches: 196    # 14x14 patches for 224x224 image
+fusion_ratio: 0.1   # Initial weight for high-frequency injection (0.0 to 1.0)
+
+# ========== Saliency Map Generation Settings ==========
+use_multi_scale: true
+scales: [0.5, 1.0, 1.5]
+aggregation: 'weighted_mean'  # Options: 'mean', 'max', 'weighted_mean'
+
+# Saliency refinement parameters
+blur_kernel: 5
+morphology_kernel: 5
+frequency_weight: 0.3  # Weight for frequency-aware enhancement in saliency generation
+
+# ========== Saliency Thresholding ==========
+adaptive_threshold: true
+threshold: 0.3  # Default threshold if adaptive is false
+
+# ========== ROI Extraction Settings ==========
+min_roi_size: 20
+max_roi_count: 5
+roi_padding: 0.1  # 10% padding around ROI
+
+# ========== SAM Prompt Generation ==========
+prompt_type: 'bbox'  # Options: 'bbox', 'points', 'combined'
+point_count: 5
+use_boundary_points: true
+
+# ========== Mask Refinement Settings ==========
+refine_masks: true
+morph_kernel_size: 5
+confidence_threshold: 0.5
+
+# ========== Output Settings ==========
+save_intermediates: true
+save_visualizations: true
+visualization_alpha: 0.5
+
+# ========== Logging ==========
+log_level: 'INFO'

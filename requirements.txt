@@ -1,0 +1,70 @@
+# MedCLIP-SAMv2 unified Python requirements (pip)
+# Python >= 3.9 is recommended
+# NOTE: For GPU support, install torch/torchvision matching your CUDA version from https://pytorch.org/get-started/; the pins below are generic.
+
+# Core DL stack
+torch>=2.0.0
+torchvision>=0.15.0
+# torchaudio (optional)
+
+# Scientific / imaging
+numpy==1.23.5
+scipy
+scikit-image>=0.19.3
+opencv-python
+Pillow
+imagecodecs
+tifffile
+SimpleITK>=2.2.1
+nibabel
+medpy
+dicom2nifti
+
+# Data & utilities
+pandas
+matplotlib==3.7.0
+seaborn
+graphviz
+tqdm==4.64.1
+requests
+ipython
+typing-extensions
+pyyaml>=6.0
+yacs
+
+# OpenCLIP / Transformers / CLIP
+ftfy
+regex
+timm>=1.0.10
+huggingface_hub
+safetensors
+transformers[sentencepiece]==4.35.2
+open-clip-torch==2.23.0
+sentencepiece
+
+# SAM optional extras (used by scripts/utilities)
+pycocotools
+onnx
+onnxruntime
+
+# nnUNet v2 dependencies
+acvl-utils>=0.2
+dynamic-network-architectures>=0.2
+batchgenerators>=0.25
+torchsummary
+torchviz
+
+# Augmentation / TTA / CAM
+kornia==0.6.4
+ttach==0.0.3
+grad-cam==1.4.6
+
+# Webdataset & logging
+webdataset>=0.2.5,<=0.2.86
+braceexpand
+fsspec
+tensorboard
+
+# Git-based packages
+git+https://github.com/openai/CLIP.git
+git+https://github.com/lucasb-eyer/pydensecrf.git
