@@ -196,7 +196,15 @@ class FreqAwareModel(nn.Module):
         
         # Load BiomedCLIP
         logger.info("Loading BiomedCLIP model...")
-        if config.get('finetuned_biomedclip', False):
+        # Priority: local checkpoint at checkpoints/pytorch_model.bin if present
+        local_ckpt = Path(config.get('biomedclip_ckpt', 'checkpoints/pytorch_model.bin'))
+        if local_ckpt.exists():
+            logger.info(f"Found local BiomedCLIP checkpoint: {local_ckpt}")
+            self.biomedclip = AutoModel.from_pretrained(
+                local_ckpt.parent,
+                trust_remote_code=True
+            ).to(device)
+        elif config.get('finetuned_biomedclip', False):
             self.biomedclip = AutoModel.from_pretrained(
                 "./saliency_maps/model",
                 trust_remote_code=True
