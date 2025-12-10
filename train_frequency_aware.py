@@ -39,16 +39,21 @@ from frequency_aware import (
 # Import BiomedCLIP (adjust path as needed)
 from transformers import AutoModel, AutoProcessor, AutoTokenizer
 
-# Setup logging
+# Setup logging with timestamped log file
+log_dir = Path('logs')
+log_dir.mkdir(exist_ok=True)
+log_filename = log_dir / f'training_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('training.log'),
+        logging.FileHandler(log_filename, mode='w'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Logging to file: {log_filename}")
 
 
 class DiceLoss(nn.Module):

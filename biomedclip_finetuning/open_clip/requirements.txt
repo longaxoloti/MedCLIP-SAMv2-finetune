@@ -7,7 +7,7 @@ huggingface_hub
 safetensors
 timm
 PyWavelets
-opencv-python
+opencv-python-headless
 transformers
 PyYAML
 Pillow
