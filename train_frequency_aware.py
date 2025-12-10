@@ -14,7 +14,7 @@ import yaml
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset, random_split
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR
 from torch.cuda.amp import autocast, GradScaler
@@ -23,6 +23,9 @@ import numpy as np
 from pathlib import Path
 import logging
 from datetime import datetime
+from PIL import Image
+from torchvision import transforms
+import csv
 
 # Import frequency-aware modules
 from frequency_aware import (
@@ -93,6 +96,93 @@ class BoundaryLoss(nn.Module):
         
         # Loss: minimize difference in gradient magnitude
         return F.mse_loss(pred_grad, target_grad)
+
+
+class MedPixDataset(Dataset):
+    """MedPix caption-only dataset for BiomedCLIP fine-tuning."""
+
+    def __init__(self, csv_path, tokenizer, image_size=224, max_text_len=64):
+        self.csv_path = Path(csv_path)
+        self.tokenizer = tokenizer
+        self.image_size = image_size
+        self.max_text_len = max_text_len
+
+        self.samples = []
+        with self.csv_path.open('r', newline='') as f:
+            reader = csv.DictReader(f)
+            if 'Caption' not in reader.fieldnames or 'filename' not in reader.fieldnames:
+                raise ValueError("CSV must have columns: Caption, filename")
+            for row in reader:
+                caption = row['Caption']
+                img_path = row['filename']
+                self.samples.append((caption, img_path))
+
+        self.transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.48145466, 0.4578275, 0.40821073],
+                std=[0.26862954, 0.26130258, 0.27577711]
+            ),
+        ])
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        caption, img_path = self.samples[idx]
+        img = Image.open(img_path).convert('RGB')
+        img = self.transform(img)
+
+        text_tokens = self.tokenizer(
+            caption,
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_text_len,
+            return_tensors='pt'
+        )
+        # Squeeze batch dimension from tokenizer outputs
+        text_tokens = {k: v.squeeze(0) for k, v in text_tokens.items()}
+
+        # No segmentation mask available for MedPix
+        mask = None
+        return img, text_tokens, mask
+
+
+def create_medpix_dataloaders(config, tokenizer):
+    """Create train/val dataloaders for MedPix caption-only dataset."""
+    csv_path = config.get('csv_path', 'data/medpix_dataset/medpix_dataset.csv')
+    val_ratio = config.get('val_ratio', 0.1)
+    batch_size = config.get('batch_size', 8)
+    num_workers = config.get('num_workers', 4)
+
+    dataset = MedPixDataset(
+        csv_path=csv_path,
+        tokenizer=tokenizer,
+        image_size=config.get('image_size', 224),
+        max_text_len=config.get('max_text_len', 64)
+    )
+
+    val_size = max(1, int(len(dataset) * val_ratio))
+    train_size = len(dataset) - val_size
+    train_ds, val_ds = random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    return train_loader, val_loader
 
 
 class FreqAwareModel(nn.Module):
@@ -219,6 +309,7 @@ class Trainer:
         self.config = config
         self.device = device
         self.current_stage = 1
+        self.task = config.get('task', 'clip')  # 'clip' (caption-only) or 'seg' (segmentation)
         
         # Initialize model
         self.model = FreqAwareModel(config, device)
@@ -244,6 +335,26 @@ class Trainer:
     def setup_stage(self, stage):
         """Setup optimizer and scheduler for each stage."""
         self.current_stage = stage
+
+        # Caption-only CLIP fine-tuning on MedPix
+        if self.task == 'clip':
+            logger.info("=== CLIP fine-tuning on MedPix (caption-only) ===")
+            for param in self.model.biomedclip.parameters():
+                param.requires_grad = True
+
+            self.optimizer = AdamW(
+                self.model.biomedclip.parameters(),
+                lr=self.config.get('clip_lr', 1e-5),
+                weight_decay=self.config.get('weight_decay', 1e-4)
+            )
+            self.scheduler = None
+            self.epochs = self.config.get('clip_epochs', 5)
+
+            trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+            total_params = sum(p.numel() for p in self.model.parameters())
+            logger.info(f"Trainable parameters: {trainable_params:,} / {total_params:,}")
+            logger.info(f"Training for {self.epochs} epochs")
+            return
         
         if stage == 1:
             # Stage 1: Freeze BiomedCLIP, train frequency modules only
@@ -390,6 +501,29 @@ class Trainer:
         
         loss_dict['total'] = loss.item()
         return loss, loss_dict
+
+    def compute_clip_loss(self, images, texts):
+        """Contrastive CLIP loss for caption-only MedPix training."""
+        outputs = self.model.biomedclip(
+            pixel_values=images,
+            input_ids=texts['input_ids'].to(self.device),
+            attention_mask=texts['attention_mask'].to(self.device),
+            return_loss=False
+        )
+
+        logits_per_image = outputs.logits_per_image
+        logits_per_text = outputs.logits_per_text
+
+        labels = torch.arange(logits_per_image.size(0), device=self.device)
+        loss_img = F.cross_entropy(logits_per_image, labels)
+        loss_txt = F.cross_entropy(logits_per_text, labels)
+        loss = 0.5 * (loss_img + loss_txt)
+
+        return loss, {
+            'clip_loss': loss.item(),
+            'loss_img': loss_img.item(),
+            'loss_txt': loss_txt.item()
+        }
     
     def train_epoch(self, dataloader):
         """Train for one epoch."""
@@ -402,34 +536,46 @@ class Trainer:
         for batch_idx, batch in enumerate(pbar):
             images, texts, masks_gt = batch
             images = images.to(self.device)
-            masks_gt = masks_gt.to(self.device)
+            masks_gt = masks_gt.to(self.device) if masks_gt is not None else None
             
             # Forward pass
             self.optimizer.zero_grad()
             
-            if self.use_amp:
-                with autocast():
-                    saliency_result = self.model(images, texts)
-                    loss, loss_dict = self.compute_loss(saliency_result, masks_gt)
-                
-                self.scaler.scale(loss).backward()
-                self.scaler.unscale_(self.optimizer)
-                torch.nn.utils.clip_grad_norm_(
-                    [p for p in self.model.parameters() if p.requires_grad],
-                    max_norm=1.0
-                )
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                saliency_result = self.model(images, texts)
-                loss, loss_dict = self.compute_loss(saliency_result, masks_gt)
-                
+            if self.task == 'clip':
+                loss, loss_dict = self.compute_clip_loss(images, texts)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(
                     [p for p in self.model.parameters() if p.requires_grad],
                     max_norm=1.0
                 )
                 self.optimizer.step()
+            else:
+                if masks_gt is None:
+                    raise RuntimeError("Segmentation task requires masks_gt but dataset provides None.")
+
+                if self.use_amp:
+                    with autocast():
+                        saliency_result = self.model(images, texts)
+                        loss, loss_dict = self.compute_loss(saliency_result, masks_gt)
+                    
+                    self.scaler.scale(loss).backward()
+                    self.scaler.unscale_(self.optimizer)
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for p in self.model.parameters() if p.requires_grad],
+                        max_norm=1.0
+                    )
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    saliency_result = self.model(images, texts)
+                    loss, loss_dict = self.compute_loss(saliency_result, masks_gt)
+                    
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                        [p for p in self.model.parameters() if p.requires_grad],
+                        max_norm=1.0
+                    )
+                    self.optimizer.step()
             
             total_loss += loss.item()
             
@@ -457,9 +603,22 @@ class Trainer:
         """Validation pass."""
         self.model.eval()
         total_loss = 0
+
+        if self.task == 'clip':
+            for batch in tqdm(dataloader, desc="Validation"):
+                images, texts, _ = batch
+                images = images.to(self.device)
+                loss, loss_dict = self.compute_clip_loss(images, texts)
+                total_loss += loss.item()
+            metrics = {
+                'val_loss': total_loss / len(dataloader),
+                'clip_loss': total_loss / len(dataloader)
+            }
+            return metrics
+
         dice_scores = []
         iou_scores = []
-        
+
         for batch in tqdm(dataloader, desc="Validation"):
             images, texts, masks_gt = batch
             images = images.to(self.device)
@@ -494,7 +653,7 @@ class Trainer:
             'dice_std': np.std(dice_scores),
             'iou_std': np.std(iou_scores)
         }
-        
+
         return metrics
     
     def compute_dice(self, pred, target, smooth=1.0):
@@ -568,9 +727,12 @@ class Trainer:
             # Log
             logger.info(f"Train Loss: {train_loss:.4f}")
             logger.info(f"Loss components: {loss_components}")
-            logger.info(f"Val Dice: {val_metrics['dice']:.4f} ± {val_metrics['dice_std']:.4f}")
-            logger.info(f"Val IoU: {val_metrics['iou']:.4f} ± {val_metrics['iou_std']:.4f}")
-            logger.info(f"Fusion Alpha: {self.model.fusion_gate.fusion_alpha.item():.4f}")
+            if self.task == 'clip':
+                logger.info(f"Val CLIP Loss: {val_metrics['clip_loss']:.4f}")
+            else:
+                logger.info(f"Val Dice: {val_metrics['dice']:.4f} ± {val_metrics['dice_std']:.4f}")
+                logger.info(f"Val IoU: {val_metrics['iou']:.4f} ± {val_metrics['iou_std']:.4f}")
+                logger.info(f"Fusion Alpha: {self.model.fusion_gate.fusion_alpha.item():.4f}")
             
             # LR scheduling
             if self.scheduler:
@@ -599,21 +761,34 @@ def main():
                        help='Resume from checkpoint')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to use')
+    parser.add_argument('--task', type=str, choices=['clip', 'seg'], default='clip',
+                        help='Training task: clip (caption-only) or seg (segmentation)')
     
     args = parser.parse_args()
     
     # Load config
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
+
+    # Override task from CLI
+    config['task'] = args.task
     
     # Setup device
     device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
     logger.info(f"Using device: {device}")
-    
-    # TODO: Load your datasets here
-    # train_loader = create_dataloader('train', config)
-    # val_loader = create_dataloader('val', config)
-    
+
+    # Tokenizer for captions
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.get('tokenizer_name', 'chuhac/BiomedCLIP-vit-bert-hf'),
+        trust_remote_code=True
+    )
+
+    # Build dataloaders
+    if config['task'] == 'clip':
+        train_loader, val_loader = create_medpix_dataloaders(config, tokenizer)
+    else:
+        raise RuntimeError("Segmentation task requires a dataset with masks. Please provide a segmentation dataset.")
+
     # Initialize trainer
     trainer = Trainer(config, device)
     
@@ -625,7 +800,7 @@ def main():
         trainer.load_checkpoint(args.resume)
     
     # Train
-    # trainer.train(train_loader, val_loader)
+    trainer.train(train_loader, val_loader)
 
 
 if __name__ == '__main__':
