@@ -6,3 +6,10 @@ tqdm
 huggingface_hub
 safetensors
 timm
+PyWavelets
+opencv-python
+transformers
+PyYAML
+Pillow
+numpy
+scipy
