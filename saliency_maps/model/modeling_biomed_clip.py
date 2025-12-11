@@ -52,7 +52,21 @@ from transformers.utils import (
     replace_return_docstrings,
 )
 from transformers.models.clip.configuration_clip import CLIPConfig, CLIPTextConfig, CLIPVisionConfig
-from transformers.models.clip.modeling_clip import *
+from transformers.models.clip.modeling_clip import (
+    CLIPVisionEmbeddings,
+    CLIPTextEmbeddings, 
+    CLIPAttention,
+    CLIPMLP,
+    CLIPEncoderLayer,
+    CLIPEncoder,
+    CLIPVisionTransformer,
+    CLIPTextTransformer,
+    CLIPVisionModel,
+    CLIPTextModel,
+    CLIPModel,
+    CLIPPreTrainedModel,
+    CLIPOutput
+)
 
 from .configuration_biomed_clip import BiomedCLIPTextProjectionConfig, BiomedCLIPConfig
 
