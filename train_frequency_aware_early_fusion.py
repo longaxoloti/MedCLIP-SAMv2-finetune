@@ -63,11 +63,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info(f"Logging to file: {log_filename}")
 
-
-# Removed DiceLoss and BoundaryLoss - not needed for CLIP training
-# Following brainstorm.md: only train with contrastive loss, no segmentation supervision
-
-
 class MedPixDataset(Dataset):
     """MedPix caption-only dataset for BiomedCLIP fine-tuning."""
 
@@ -494,7 +489,7 @@ class Trainer:
         
         # Regularization: encourage fusion_alpha to stay small (0.05-0.15)
         fusion_alpha = self.model.fusion_gate.fusion_alpha
-        alpha_reg = 0.01 * torch.abs(fusion_alpha - 0.1)  # Target alpha = 0.1
+        alpha_reg = 3.0 * torch.abs(fusion_alpha - 0.1)  # Target alpha = 0.1
         
         total_loss = contrastive_loss + alpha_reg
         
@@ -543,7 +538,9 @@ class Trainer:
                     max_norm=1.0
                 )
                 self.optimizer.step()
-            
+                
+            # Hard clamp: limit fusion_alpha to max 0.2
+            self.model.fusion_gate.fusion_alpha.data.clamp_(max=0.2)
             total_loss += loss.item()
             
             # Accumulate loss components
