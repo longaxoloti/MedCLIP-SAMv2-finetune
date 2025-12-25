@@ -372,8 +372,8 @@ class Trainer:
             
             self.optimizer = Adam(
                 trainable_params,
-                lr=self.config.get('stage1_lr', 1e-4),
-                weight_decay=self.config.get('weight_decay', 1e-5)
+                lr=float(self.config.get('stage1_lr', 1e-4)),
+                weight_decay=float(self.config.get('weight_decay', 1e-5))
             )
             self.scheduler = None
             self.epochs = self.config.get('stage1_epochs', 10)
@@ -404,22 +404,22 @@ class Trainer:
             param_groups = [
                 {
                     'params': self.model.high_freq_proj.parameters(),
-                    'lr': self.config.get('stage2_freq_lr', 5e-5)
+                    'lr': float(self.config.get('stage2_freq_lr', self.config.get('stage2_lr', 5e-5)))
                 },
                 {
                     'params': self.model.fusion_gate.parameters(),
-                    'lr': self.config.get('stage2_freq_lr', 5e-5)
+                    'lr': float(self.config.get('stage2_freq_lr', self.config.get('stage2_lr', 5e-5)))
                 },
                 {
                     'params': [p for p in self.model.biomedclip.vision_model.parameters()
                               if p.requires_grad],
-                    'lr': self.config.get('stage2_vision_lr', 1e-5)  # Low LR to preserve pretrained
+                    'lr': float(self.config.get('stage2_vision_lr', self.config.get('stage2_lr', 1e-5)))  # Low LR to preserve pretrained
                 }
             ]
             
             self.optimizer = AdamW(
                 param_groups,
-                weight_decay=self.config.get('weight_decay', 1e-4)
+                weight_decay=float(self.config.get('weight_decay', 1e-4))
             )
             self.scheduler = CosineAnnealingLR(
                 self.optimizer,
@@ -457,7 +457,7 @@ class Trainer:
             
             self.optimizer = AdamW(
                 param_groups,
-                weight_decay=self.config.get('weight_decay', 1e-4)
+                weight_decay=float(self.config.get('weight_decay', 1e-4))
             )
             self.scheduler = CosineAnnealingLR(
                 self.optimizer,
@@ -540,7 +540,7 @@ class Trainer:
                 self.optimizer.step()
                 
             # Hard clamp: limit fusion_alpha to max 0.2
-            self.model.fusion_gate.fusion_alpha.data.clamp_(max=0.2)
+            self.model.fusion_gate.fusion_alpha.data.clamp_(max=0.35)
             total_loss += loss.item()
             
             # Accumulate loss components
@@ -612,7 +612,9 @@ class Trainer:
     
     def load_checkpoint(self, filename):
         """Load model checkpoint."""
-        path = self.checkpoint_dir / filename
+        path = Path(filename)
+        if not path.is_absolute():
+            path = self.checkpoint_dir / filename
         checkpoint = torch.load(path, map_location=self.device)
         
         self.model.load_state_dict(checkpoint['model_state_dict'])

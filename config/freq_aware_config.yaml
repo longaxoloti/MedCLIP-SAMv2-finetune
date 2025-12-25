@@ -1,13 +1,62 @@
-# Frequency-Aware MedCLIP-SAMv2 Configuration
+# Frequency-Aware MedCLIP-SAMv2 Configuration (OPTIMIZED v2)
+# Based on analysis of training_20251211_050039.log
+# Target: Improve val_loss from -1.32 to -2.0+
 
 # ========== Wavelet Transform Settings ==========
-wavelet_type: 'haar'  # Options: 'haar', 'db2', 'bior1.5', 'bior2.4', 'coif1', 'dmey'
+wavelet_type: 'db4'  # Changed from 'haar' to 'db4' for more discriminative features
 image_size: 224
 
 # ========== Feature Fusion Settings ==========
 embedding_dim: 768  # BiomedCLIP ViT-B dimension
 num_patches: 196    # 14x14 patches for 224x224 image
-fusion_ratio: 0.1   # Initial weight for high-frequency injection (0.0 to 1.0)
+fusion_ratio: 0.05  # ↓ REDUCED from 0.1 (start smaller, avoid α explosion)
+
+# ========== Training Parameters ==========
+# STAGE 1: Warm-up Frequency Modules (BiomedCLIP Frozen)
+stage1_lr: 5e-5
+stage1_epochs: 40
+weight_decay: 1e-4
+
+# Learning rate scheduler
+use_scheduler: true
+scheduler_type: 'cosine'
+scheduler_t_max: 40
+scheduler_eta_min: 1e-6
+
+# STAGE 2: Fine-tune Vision Encoder (Optional)
+stage2_lr: 1e-5
+stage2_epochs: 20
+unfreeze_blocks: 4
+
+# ========== Frequency Fusion Parameters ==========
+alpha_reg_weight: 0.1
+target_fusion_alpha: 0.1
+alpha_hard_constraint: 0.15
+
+# ========== Loss Function Parameters ==========
+# DHN-NCE Configuration
+dhncce_temperature: 0.6
+dhncce_beta1: 1.5
+dhncce_beta2: 1.5
+
+# Loss weights
+contrastive_loss_weight: 1.0
+alpha_reg_loss_weight: 0.1
+alpha_hard_constraint_weight: 0.5
+
+# ========== Batch and Data Settings ==========
+batch_size: 8
+num_workers: 4
+csv_path: '/home/long/projects/MedCLIP-SAMv2-finetune/data/medpix_dataset/medpix_dataset.csv'
+val_ratio: 0.1
+
+# ========== Image Processing ==========
+image_size: 224
+max_text_len: 64
+
+# Text augmentation
+use_text_augmentation: true
+text_augmentation_prob: 0.5  # 50% chance to apply template
 
 # ========== Saliency Map Generation Settings ==========
 use_multi_scale: true
@@ -45,3 +94,15 @@ visualization_alpha: 0.5
 
 # ========== Logging ==========
 log_level: 'INFO'
+
+# ========== Mixed Precision & Device ==========
+use_amp: true
+device: 'cuda'
+
+# ========== Gradient Clipping ==========
+grad_clip_norm: 1.0
+
+# ========== Hard Negative Mining (Future) ==========
+hard_negative_mining: false  # Enable in Exp 3+
+hard_negative_k: 8
+hard_negative_refresh_freq: 5  # Refresh cache every N epochs
