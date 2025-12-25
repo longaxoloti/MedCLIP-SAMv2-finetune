@@ -122,15 +122,22 @@ import json
 if __name__ == "__main__":
     openclip_config = json.load(open("saliency_maps/model/config.json"))
     openclip_model, _ = create_model_from_pretrained('hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224')
+    # Prefer a fine-tuned checkpoint named *.pth (e.g., stage1_best.pth); fallback to *.pt
+    pth_files = glob.glob(f"saliency_maps/model/*.pth")
     pt_files = glob.glob(f"saliency_maps/model/*.pt")
-    if pt_files:
-        # Load the first .pt file found
-        state_dict = torch.load(pt_files[0])
-        print(f"Loaded model: {pt_files[0]}")
+    chosen_file = None
+    if pth_files:
+        chosen_file = pth_files[0]
+    elif pt_files:
+        chosen_file = pt_files[0]
+    if chosen_file:
+        # Load checkpoint (supports both .pth and .pt)
+        state_dict = torch.load(chosen_file, map_location="cpu")
+        print(f"Loaded checkpoint: {chosen_file}")
     else:
-        print("No .pt files found in the directory.")
+        raise FileNotFoundError("No .pth or .pt checkpoint found in saliency_maps/model/")
     for key in list(state_dict.keys()):
-        if(key.startswith("model.")):
+        if key.startswith("model."):
             state_dict[key.replace('model.', '')] = state_dict.pop(key)
     openclip_model.load_state_dict(state_dict)
     for i in openclip_model.state_dict().keys():

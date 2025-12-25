@@ -24,6 +24,75 @@ from text_prompts import *
 # Disable parallel tokenization warnings
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+
+def _infer_state_dict(ckpt_obj: dict) -> dict:
+    """Try to extract a state_dict from various checkpoint layouts.
+
+    Supports common keys like 'state_dict', 'model', 'model_state_dict'. If none
+    are present but the dict looks like a raw state_dict (str->Tensor), returns
+    it directly.
+    """
+    candidate_keys = [
+        'state_dict', 'model', 'model_state_dict', 'net', 'module', 'ema_state_dict'
+    ]
+    for k in candidate_keys:
+        if k in ckpt_obj and isinstance(ckpt_obj[k], dict):
+            return ckpt_obj[k]
+    # Heuristic: looks like a raw state_dict
+    if all(isinstance(k, str) for k in ckpt_obj.keys()):
+        return ckpt_obj
+    raise ValueError("Unsupported checkpoint structure; no state_dict found.")
+
+
+def _strip_prefix_if_present(state_dict: dict, prefixes=("module.", "model.")) -> dict:
+    """Remove common DistributedDataParallel or wrapped prefixes from keys."""
+    out = {}
+    for k, v in state_dict.items():
+        new_k = k
+        for p in prefixes:
+            if new_k.startswith(p):
+                new_k = new_k[len(p):]
+        out[new_k] = v
+    return out
+
+
+def load_finetune_checkpoint(model, ckpt_path: str, strict: bool = False, device: str = "cpu"):
+    """Load a .pth checkpoint into the provided model with robust key handling.
+
+    Args:
+        model: The instantiated model to load weights into.
+        ckpt_path: Path to a .pth checkpoint file.
+        strict: Whether to enforce an exact key match.
+        device: Map location for loading checkpoint.
+    Returns:
+        (missing_keys, unexpected_keys): Lists from load_state_dict for visibility.
+    """
+    print(f"Loading fine-tuned checkpoint from: {ckpt_path}")
+    ckpt = torch.load(ckpt_path, map_location=device)
+    state_dict = _infer_state_dict(ckpt)
+    state_dict = _strip_prefix_if_present(state_dict)
+
+    # Some checkpoints may nest vision/text submodules; rely on non-strict by default.
+    result = model.load_state_dict(state_dict, strict=strict)
+    # result can be a NamedTuple in newer torch, or a simple object with attributes
+    try:
+        missing = list(result.missing_keys)
+        unexpected = list(result.unexpected_keys)
+    except Exception:
+        # Fallback for older return types
+        missing = getattr(result, 'missing_keys', [])
+        unexpected = getattr(result, 'unexpected_keys', [])
+
+    if missing:
+        print(f"[checkpoint] Missing keys: {len(missing)} (showing first 10): {missing[:10]}")
+    if unexpected:
+        print(f"[checkpoint] Unexpected keys: {len(unexpected)} (showing first 10): {unexpected[:10]}")
+    if not missing and not unexpected:
+        print("[checkpoint] All keys matched.")
+    else:
+        print("[checkpoint] Loaded with non-strict matching; this is usually fine for compatible heads.")
+    return missing, unexpected
+
 # Function to calculate Dice coefficient for evaluating segmentation
 def calculate_dice_coefficient(mask1, mask2):
     # Calculate intersection and Dice score
@@ -159,6 +228,16 @@ def main(args):
     elif(args.model_name == "CLIP" and args.finetuned):
         model = AutoModel.from_pretrained("./model", trust_remote_code=True).to(device)
 
+    # Optionally override weights with a specified fine-tuned checkpoint (e.g., stage1_best.pth)
+    if getattr(args, 'checkpoint_path', None):
+        try:
+            load_finetune_checkpoint(model, args.checkpoint_path, strict=args.checkpoint_strict, device='cpu')
+            # keep model on selected device
+            model.to(device)
+            print("Checkpoint loaded successfully.")
+        except Exception as e:
+            print(f"Failed to load checkpoint from {args.checkpoint_path}: {e}")
+
     if(not args.reproduce):
         # Get user input for the text to generate saliency maps
         text = str(input("Enter the text: "))
@@ -227,6 +306,9 @@ if __name__ == '__main__':
     parser.add_argument('--seed', type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument('--json-path', type=str, default="busi.json", help="Path to the JSON file containing the text prompts")
     parser.add_argument('--reproduce', action='store_true')
+    # New: optional fine-tuned checkpoint override (e.g., ./saliency_maps/model/stage1_best.pth)
+    parser.add_argument('--checkpoint-path', type=str, default=None, help='Path to a fine-tuned checkpoint (.pth) to load into the model')
+    parser.add_argument('--checkpoint-strict', action='store_true', help='Use strict key matching when loading the checkpoint')
     args = parser.parse_args()
     main(args)
 
